@@ -44,17 +44,28 @@ const SKINS: Skin[] = [
 
 export default function Game() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [score, setScore] = useState(0);
+  
+  // High-frequency values moved to Refs to avoid re-renders
+  const scoreRef = useRef(0);
+  const coinsRef = useRef(() => {
+    const saved = localStorage.getItem('neon-strike-coins');
+    return saved ? parseInt(saved, 10) : 0;
+  });
+  const levelRef = useRef(1);
+
+  // Still use state for UI that doesn't update every frame (menus, etc.)
+  const [scoreUI, setScoreUI] = useState(0);
+  const [levelUI, setLevelUI] = useState(1);
+  const [coinsUI, setCoinsUI] = useState(() => {
+    const saved = localStorage.getItem('neon-strike-coins');
+    return saved ? parseInt(saved, 10) : 0;
+  });
+
   const [highScore, setHighScore] = useState(() => {
     const saved = localStorage.getItem('neon-strike-highscore');
     return saved ? parseInt(saved, 10) : 0;
   });
   
-  const [coins, setCoins] = useState(() => {
-    const saved = localStorage.getItem('neon-strike-coins');
-    return saved ? parseInt(saved, 10) : 0;
-  });
-
   const [purchasedSkins, setPurchasedSkins] = useState<string[]>(() => {
     const saved = localStorage.getItem('neon-strike-skins');
     return saved ? JSON.parse(saved) : ['default'];
@@ -69,7 +80,19 @@ export default function Game() {
   const [isGameOver, setIsGameOver] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
   const [showStore, setShowStore] = useState(false);
-  const [level, setLevel] = useState(1);
+
+  // Sync refs to state for HUD display periodically (less often than every frame)
+  useEffect(() => {
+    if (!gameStarted || isGameOver) return;
+    
+    const interval = setInterval(() => {
+      setScoreUI(scoreRef.current);
+      setLevelUI(levelRef.current);
+      setCoinsUI(coinsRef.current instanceof Function ? coinsRef.current() : coinsRef.current);
+    }, 100); // 10 times per second is enough for HUD
+    
+    return () => clearInterval(interval);
+  }, [gameStarted, isGameOver]);
 
   // Game state refs (to avoid re-renders)
   const player = useRef<GameObject>({
@@ -109,9 +132,11 @@ export default function Game() {
     enemies.current = [];
     gameCoins.current = [];
     particles.current = [];
-    setScore(0);
+    scoreRef.current = 0;
+    levelRef.current = 1;
+    setScoreUI(0);
+    setLevelUI(1);
     setIsGameOver(false);
-    setLevel(1);
     spawnRate.current = 2000;
   }, [activeSkin.color]);
 
@@ -135,26 +160,26 @@ export default function Game() {
     else if (side === 2) { x = Math.random() * width; y = height + 50; }
     else { x = -50; y = Math.random() * height; }
 
-    const speedMultiplier = 1.8 + level * 0.2; // Even higher base speed
+    const speedMultiplier = 1.8 + levelRef.current * 0.2; // Even higher base speed
     const typeRoll = Math.random();
     let type: Enemy['type'] = 'basic';
     let health = 1;
     let radius = 15;
     let color = '#ff00ff';
-    let speed = (2.5 + Math.random() * 2.0) * speedMultiplier; // Significantly increased base speed
+    let speed = (2.5 + Math.random() * 2.0) * speedMultiplier;
 
     if (typeRoll > 0.85) {
       type = 'tank';
       health = 3;
       radius = 25;
       color = '#ff0000';
-      speed = 1.5 * speedMultiplier; // Tanks are now much faster
+      speed = 1.5 * speedMultiplier;
     } else if (typeRoll > 0.65) {
       type = 'fast';
       health = 1;
       radius = 12;
       color = '#ffff00';
-      speed = 4.5 * speedMultiplier; // Fast ones are now extremely quick
+      speed = 4.5 * speedMultiplier;
     }
 
     const angle = Math.atan2(player.current.y - y, player.current.x - x);
@@ -169,7 +194,7 @@ export default function Game() {
       maxHealth: health,
       type
     });
-  }, [level]);
+  }, []);
 
   const createExplosion = (x: number, y: number, color: string) => {
     for (let i = 0; i < 12; i++) {
@@ -194,11 +219,8 @@ export default function Game() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Movement - Direct 1:1 response (No lag)
-    player.current.x = mouse.current.x;
-    player.current.y = mouse.current.y;
-
-    // Pulse effect for skin
+    // Movement - Handled directly in mousemove for maximum responsiveness
+    // But we still pulse the color here
     player.current.color = activeSkin.color;
 
     // Bounds check
@@ -208,19 +230,16 @@ export default function Game() {
     if (player.current.y > canvas.height - player.current.radius) player.current.y = canvas.height - player.current.radius;
 
     // Survival Score
-    setScore(s => {
-      const newScore = s + 1;
-      if (Math.floor(newScore / 1000) > Math.floor(s / 1000)) {
-        setLevel(l => l + 1);
-      }
-      return newScore;
-    });
+    scoreRef.current += 1;
+    if (scoreRef.current % 1000 === 0) {
+      levelRef.current += 1;
+    }
 
     // Spawn enemies - Faster rate for more chaos
     if (time - lastSpawnTime.current > spawnRate.current) {
       spawnEnemy(canvas.width, canvas.height);
       lastSpawnTime.current = time;
-      spawnRate.current = Math.max(400, 2000 - level * 150); // Faster spawn floor
+      spawnRate.current = Math.max(400, 2000 - levelRef.current * 150);
     }
 
     // Spawn coins
@@ -240,7 +259,6 @@ export default function Game() {
 
     // Update enemies and collisions
     enemies.current = enemies.current.filter(e => {
-      // Move towards player - Maintaining full speed
       const angle = Math.atan2(player.current.y - e.y, player.current.x - e.x); 
       const currentSpeed = Math.sqrt(e.vx * e.vx + e.vy * e.vy); 
       e.vx = Math.cos(angle) * currentSpeed;
@@ -249,17 +267,16 @@ export default function Game() {
       e.x += e.vx;
       e.y += e.vy;
 
-      // Player collision
       const pdx = e.x - player.current.x;
       const pdy = e.y - player.current.y;
       const pDist = Math.sqrt(pdx * pdx + pdy * pdy);
 
       if (pDist < e.radius + player.current.radius) {
+        setScoreUI(scoreRef.current); // Final sync
         setIsGameOver(true);
         createExplosion(player.current.x, player.current.y, player.current.color);
       }
 
-      // Check if enemy is way off screen to clean up
       const buffer = 100;
       if (e.x < -buffer || e.x > canvas.width + buffer || e.y < -buffer || e.y > canvas.height + buffer) {
         return false;
@@ -275,11 +292,10 @@ export default function Game() {
       const dist = Math.sqrt(dx * dx + dy * dy);
 
       if (dist < c.radius + player.current.radius) {
-        setCoins(prev => {
-          const next = prev + 1;
-          localStorage.setItem('neon-strike-coins', next.toString());
-          return next;
-        });
+        const val = typeof coinsRef.current === 'function' ? coinsRef.current() : coinsRef.current;
+        const nextCoins = val + 1;
+        coinsRef.current = nextCoins;
+        localStorage.setItem('neon-strike-coins', nextCoins.toString());
         createExplosion(c.x, c.y, c.color);
         return false;
       }
@@ -300,7 +316,7 @@ export default function Game() {
       ctx.lineTo(x, canvas.height);
       ctx.stroke();
     }
-    for (let y = 0; y < canvas.height; y += gridSize) {
+    for (let y = 0; y < canvas.height; y += 60) {
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(canvas.width, y);
@@ -317,7 +333,7 @@ export default function Game() {
     });
     ctx.globalAlpha = 1;
 
-    // Draw Enemies (All are now round balls as requested)
+    // Draw Enemies
     enemies.current.forEach(e => {
       ctx.strokeStyle = e.color;
       ctx.lineWidth = 3;
@@ -328,7 +344,6 @@ export default function Game() {
       ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Inner glow for "sharlar" effect
       ctx.globalAlpha = 0.3;
       ctx.fillStyle = e.color;
       ctx.fill();
@@ -346,7 +361,6 @@ export default function Game() {
       ctx.arc(c.x, c.y, c.radius, 0, Math.PI * 2);
       ctx.fill();
       
-      // Coin inner sign
       ctx.fillStyle = '#000';
       ctx.font = 'bold 10px sans-serif';
       ctx.textAlign = 'center';
@@ -367,18 +381,11 @@ export default function Game() {
     ctx.shadowColor = player.current.color;
     ctx.beginPath();
     
-    // Draw based on active skin shape
     const r = player.current.radius;
-    if (activeSkin.shape === 'square') {
-      ctx.strokeRect(-r, -r, r * 2, r * 2);
-    } else if (activeSkin.shape === 'circle') {
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-    } else if (activeSkin.shape === 'diamond') {
-      ctx.moveTo(r * 1.5, 0);
-      ctx.lineTo(0, r);
-      ctx.lineTo(-r, 0);
-      ctx.lineTo(0, -r);
-      ctx.closePath();
+    if (activeSkin.shape === 'square') { ctx.strokeRect(-r, -r, r * 2, r * 2); }
+    else if (activeSkin.shape === 'circle') { ctx.arc(0, 0, r, 0, Math.PI * 2); }
+    else if (activeSkin.shape === 'diamond') {
+      ctx.moveTo(r * 1.5, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0); ctx.lineTo(0, -r); ctx.closePath();
     } else if (activeSkin.shape === 'star') {
       for (let i = 0; i < 5; i++) {
         ctx.lineTo(Math.cos((i * 72 * Math.PI) / 180) * r * 1.5, Math.sin((i * 72 * Math.PI) / 180) * r * 1.5);
@@ -386,12 +393,7 @@ export default function Game() {
       }
       ctx.closePath();
     } else {
-      // Default triangle
-      ctx.moveTo(r, 0);
-      ctx.lineTo(-r, r);
-      ctx.lineTo(-r * 0.5, 0);
-      ctx.lineTo(-r, -r);
-      ctx.closePath();
+      ctx.moveTo(r, 0); ctx.lineTo(-r, r); ctx.lineTo(-r * 0.5, 0); ctx.lineTo(-r, -r); ctx.closePath();
     }
     
     ctx.stroke();
@@ -401,9 +403,7 @@ export default function Game() {
     frameId.current = requestAnimationFrame(update);
   };
 
-  const shoot = () => {
-    // Shooting disabled
-  };
+  const shoot = () => {};
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -421,13 +421,16 @@ export default function Game() {
     const handleKeyUp = (e: KeyboardEvent) => keys.current[e.key] = false;
     const handleMouseMove = (e: MouseEvent) => {
       mouse.current = { x: e.clientX, y: e.clientY };
+      // Instant movement response
+      if (gameStarted && !isGameOver) {
+        player.current.x = e.clientX;
+        player.current.y = e.clientY;
+      }
     };
-    const handleClick = () => shoot();
-
+    
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mousedown', handleClick);
 
     frameId.current = requestAnimationFrame(update);
 
@@ -436,23 +439,24 @@ export default function Game() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mousedown', handleClick);
       cancelAnimationFrame(frameId.current);
     };
-  }, [isGameOver, gameStarted, shoot]);
+  }, [isGameOver, gameStarted]);
 
   useEffect(() => {
-    if (isGameOver && score > highScore) {
-      setHighScore(score);
-      localStorage.setItem('neon-strike-highscore', score.toString());
+    if (isGameOver && scoreRef.current > highScore) {
+      setHighScore(scoreRef.current);
+      localStorage.setItem('neon-strike-highscore', scoreRef.current.toString());
     }
-  }, [isGameOver, score, highScore]);
+  }, [isGameOver, highScore]);
 
   const buySkin = (id: string, cost: number) => {
-    if (coins >= cost && !purchasedSkins.includes(id)) {
-      const nextCoins = coins - cost;
+    const currentCoins = typeof coinsRef.current === 'function' ? coinsRef.current() : coinsRef.current;
+    if (currentCoins >= cost && !purchasedSkins.includes(id)) {
+      const nextCoins = currentCoins - cost;
       const nextSkins = [...purchasedSkins, id];
-      setCoins(nextCoins);
+      coinsRef.current = nextCoins;
+      setCoinsUI(nextCoins);
       setPurchasedSkins(nextSkins);
       setActiveSkinId(id);
       localStorage.setItem('neon-strike-coins', nextCoins.toString());
@@ -481,18 +485,18 @@ export default function Game() {
         <div className="absolute top-0 left-0 right-0 p-6 flex justify-between items-start pointer-events-none z-10">
           <div className="space-y-1">
             <div className="text-4xl font-black text-white tracking-tighter uppercase italic">
-              {score.toLocaleString()}
+              {scoreUI.toLocaleString()}
             </div>
             <div className="text-xs font-bold text-cyan-400 uppercase tracking-widest flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-              Level {level}
+              Level {levelUI}
             </div>
           </div>
           
           <div className="text-right flex flex-col items-end gap-2">
             <div className="flex items-center gap-2 bg-yellow-400/10 px-3 py-1 rounded-full border border-yellow-400/20">
               <span className="text-yellow-400 font-black text-lg">
-                {coins.toLocaleString()}
+                {coinsUI.toLocaleString()}
               </span>
               <div className="w-4 h-4 bg-yellow-400 rounded-full flex items-center justify-center text-[10px] text-black font-bold">
                 $
@@ -542,7 +546,7 @@ export default function Game() {
                     <div className="w-3 h-3 bg-black rounded-full flex items-center justify-center text-[8px] text-yellow-400 font-bold">
                       $
                     </div>
-                    {coins}
+                    {coinsUI}
                   </div>
                 </div>
                 <h1 className="text-8xl font-black text-white italic uppercase tracking-tighter leading-none mb-4">
@@ -632,12 +636,12 @@ export default function Game() {
                 <div className="flex justify-between gap-12 items-center">
                   <div className="text-left">
                     <div className="text-xs font-bold text-white/30 uppercase tracking-widest mb-1">Final Score</div>
-                    <div className="text-5xl font-black text-white italic">{score.toLocaleString()}</div>
+                    <div className="text-5xl font-black text-white italic">{scoreUI.toLocaleString()}</div>
                   </div>
                   <Trophy className="text-yellow-400 w-12 h-12" />
                 </div>
                 
-                {score >= highScore && score > 0 && (
+                {scoreUI >= highScore && scoreUI > 0 && (
                   <motion.div
                     initial={{ opacity: 0, x: -10 }}
                     animate={{ opacity: 1, x: 0 }}
